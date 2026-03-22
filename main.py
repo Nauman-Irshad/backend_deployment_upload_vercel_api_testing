@@ -140,6 +140,7 @@ def head_health():
 
 @app.on_event("startup")
 def startup() -> None:
+    print("[startup] main.py build=2-cloudinary (Cloudinary + Firestore; FIREBASE_BUCKET not required)")
     if os.getenv("SKIP_FIREBASE_INIT", "").lower() in ("1", "true", "yes"):
         return
     try:

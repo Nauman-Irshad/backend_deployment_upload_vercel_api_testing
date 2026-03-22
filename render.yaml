@@ -1,9 +1,8 @@
-# Optional Render Blueprint — adjust env vars in the dashboard
+# Repo root IS the API (main.py at top level). Do NOT set rootDir to "backend".
 services:
   - type: web
     name: image-upload-api
     runtime: python
-    rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
