@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import uuid
+from urllib.parse import quote
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -80,6 +81,23 @@ def load_records() -> list[dict]:
 def save_records(records: list[dict]) -> None:
     with RECORDS_PATH.open("w", encoding="utf-8") as f:
         json.dump(records, f, indent=2)
+
+
+def resolve_record_image_url(r: dict) -> str | None:
+    """Prefer stored URL; else rebuild from Cloudinary public_id + CLOUDINARY_CLOUD_NAME."""
+    u = r.get("image_url") or r.get("firebase_url")
+    if u:
+        s = str(u).strip()
+        if s:
+            return s
+    pid = (r.get("public_id") or r.get("storage_path") or "").strip()
+    if not pid:
+        return None
+    cloud = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+    if not cloud:
+        return None
+    safe = quote(pid, safe="/")
+    return f"https://res.cloudinary.com/{cloud}/image/upload/{safe}"
 
 
 def safe_filename(name: str) -> str:
@@ -218,7 +236,7 @@ def list_records():
     records = load_records()
     out = []
     for r in records:
-        url = r.get("image_url") or r.get("firebase_url")
+        url = resolve_record_image_url(r)
         out.append(
             {
                 "id": r.get("id"),
@@ -229,3 +247,14 @@ def list_records():
             }
         )
     return {"records": out}
+
+
+@app.delete("/records/{record_id}")
+def delete_record(record_id: str):
+    """Remove one row from the local JSON list (e.g. bad legacy row without URL)."""
+    recs = load_records()
+    new_recs = [x for x in recs if str(x.get("id")) != record_id]
+    if len(new_recs) == len(recs):
+        raise HTTPException(status_code=404, detail="Record not found")
+    save_records(new_recs)
+    return {"ok": True, "deleted": record_id}
