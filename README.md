@@ -1,33 +1,30 @@
-# Image upload API (FastAPI + Cloudinary + Firestore)
+# Image upload API (FastAPI + Cloudinary only)
 
-Images go to **Cloudinary** (free tier). Metadata goes to **Firebase Firestore** (works on **Spark** — no Firebase Storage needed).
+1. Browser sends image to this API (`POST /upload`).
+2. API uploads to **Cloudinary** and appends a row to **`data/records.json`** on disk.
+3. **Render logs** print a line like `[upload] OK id=... url=https://res.cloudinary.com/...`
 
-## Render — environment variables
+**No Firebase.** On Render, remove any `FIREBASE_*` env vars.
+
+## Environment
 
 | Variable | Description |
 |----------|-------------|
-| `CLOUDINARY_CLOUD_NAME` | From Cloudinary dashboard |
-| `CLOUDINARY_API_KEY` | From Cloudinary dashboard |
-| `CLOUDINARY_API_SECRET` | From Cloudinary dashboard |
-| `FIREBASE_KEY_PATH` | Path to Firebase **service account** JSON (Secret File on Render) |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary dashboard |
+| `CLOUDINARY_API_KEY` | Cloudinary dashboard |
+| `CLOUDINARY_API_SECRET` | Cloudinary dashboard |
 | `FRONTEND_ORIGIN` | Your Vercel URL or `*` |
 
-`FIREBASE_BUCKET` is **optional** (not used for file storage anymore).
+## Render
 
-## Render — deploy
+- **Root Directory:** empty (repo root = this folder).
+- **Build:** `pip install -r requirements.txt`
+- **Start:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
 
-1. **Build:** `pip install -r requirements.txt`
-2. **Start:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
-3. **Health check path:** `/health`
+Disk is ephemeral on free tier; `records.json` resets if the instance is wiped. For durable history, add a DB later.
 
-## Local
+## API
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate   # Windows
-pip install -r requirements.txt
-copy .env.example .env   # fill Cloudinary + FIREBASE_KEY_PATH
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Place `firebase_key.json` in this directory (not committed) for Firestore.
+- `GET /health` → `{"status":"ok"}`
+- `POST /upload` (multipart `file`) → `{ success, message, id, image_url }`
+- `GET /records` → `{ records: [...] }`

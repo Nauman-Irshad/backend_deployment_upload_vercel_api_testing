@@ -1,9 +1,11 @@
 """
-FastAPI image upload API: Cloudinary (images) + Firestore (metadata).
+FastAPI: receive image → upload to Cloudinary → save metadata on disk → return URL.
+Logs each successful upload to stdout (Render logs).
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -23,18 +25,11 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+RECORDS_PATH = DATA_DIR / "records.json"
 
-# Firebase Admin (Firestore only — no Firebase Storage required on Spark)
-_firebase_ready = False
 _cloudinary_configured = False
-
-
-def _resolve_key_path() -> Path:
-    raw = os.getenv("FIREBASE_KEY_PATH", "./firebase_key.json")
-    p = Path(raw)
-    if not p.is_absolute():
-        p = (BASE_DIR / p).resolve()
-    return p
 
 
 def init_cloudinary() -> None:
@@ -46,54 +41,32 @@ def init_cloudinary() -> None:
     secret = os.getenv("CLOUDINARY_API_SECRET", "").strip()
     if not (name and key and secret):
         raise RuntimeError(
-            "Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET on Render"
+            "Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET"
         )
     cloudinary.config(cloud_name=name, api_key=key, api_secret=secret)
     _cloudinary_configured = True
 
 
-def init_firebase() -> None:
-    global _firebase_ready
-    if _firebase_ready:
-        return
-    import firebase_admin
-    from firebase_admin import credentials
-
-    key_path = _resolve_key_path()
-    if not key_path.is_file():
-        raise RuntimeError(f"Firebase key not found at: {key_path}")
-
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(str(key_path))
-        bucket = os.getenv("FIREBASE_BUCKET", "").strip()
-        if bucket:
-            firebase_admin.initialize_app(cred, {"storageBucket": bucket})
-        else:
-            firebase_admin.initialize_app(cred)
-    _firebase_ready = True
+def load_records() -> list[dict]:
+    if not RECORDS_PATH.is_file():
+        return []
+    try:
+        with RECORDS_PATH.open(encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
-def get_db():
-    from firebase_admin import firestore
-
-    init_firebase()
-    return firestore.client()
+def save_records(records: list[dict]) -> None:
+    with RECORDS_PATH.open("w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2)
 
 
 def safe_filename(name: str) -> str:
     base = Path(name).name
     base = re.sub(r"[^\w.\-]", "_", base)
     return base or "image"
-
-
-def firestore_ts_to_iso(ts) -> str | None:
-    if ts is None:
-        return None
-    if hasattr(ts, "to_datetime"):
-        return ts.to_datetime().replace(tzinfo=timezone.utc).isoformat()
-    if hasattr(ts, "isoformat"):
-        return ts.isoformat()
-    return str(ts)
 
 
 def parse_origins() -> list[str]:
@@ -103,7 +76,7 @@ def parse_origins() -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
-app = FastAPI(title="Image Upload API", version="1.0.0")
+app = FastAPI(title="Image Upload API", version="3-cloudinary-only")
 
 app.add_middleware(
     CORSMiddleware,
@@ -119,12 +92,12 @@ app.add_middleware(
 def root():
     return {
         "service": "image-upload-api",
-        "version": "2-cloudinary",
+        "version": "3-cloudinary-only",
         "status": "running",
         "storage": "cloudinary",
+        "metadata": "local_json_file",
         "docs": "/docs",
         "health": "/health",
-        "hint": "The React UI is separate: run `npm run dev` in frontend/ (port 5173) or open your Vercel URL.",
     }
 
 
@@ -140,15 +113,10 @@ def head_health():
 
 @app.on_event("startup")
 def startup() -> None:
-    print("[startup] main.py build=2-cloudinary (Cloudinary + Firestore; FIREBASE_BUCKET not required)")
-    if os.getenv("SKIP_FIREBASE_INIT", "").lower() in ("1", "true", "yes"):
-        return
-    try:
-        init_firebase()
-    except Exception as e:
-        print(f"[startup] Firebase (Firestore) not initialized: {e}")
+    print("[startup] Cloudinary-only API; records at data/records.json")
     try:
         init_cloudinary()
+        print("[startup] Cloudinary OK")
     except Exception as e:
         print(f"[startup] Cloudinary not configured: {e}")
 
@@ -166,6 +134,7 @@ async def upload(file: UploadFile = File(...)):
     orig = safe_filename(file.filename or "upload.bin")
     unique = f"{uuid.uuid4().hex}_{orig}"
     local_path = UPLOAD_DIR / unique
+    record_id = str(uuid.uuid4())
 
     try:
         with local_path.open("wb") as buffer:
@@ -175,8 +144,6 @@ async def upload(file: UploadFile = File(...)):
 
     try:
         init_cloudinary()
-        init_firebase()
-
         result = cloudinary.uploader.upload(
             str(local_path),
             folder="uploads",
@@ -190,27 +157,27 @@ async def upload(file: UploadFile = File(...)):
         if not image_url:
             raise RuntimeError("Cloudinary did not return a URL")
 
-        from firebase_admin import firestore as fs
+        ts = datetime.now(timezone.utc).isoformat()
+        row = {
+            "id": record_id,
+            "filename": orig,
+            "timestamp": ts,
+            "image_url": image_url,
+            "public_id": public_id,
+        }
+        recs = load_records()
+        recs.insert(0, row)
+        save_records(recs)
 
-        db = get_db()
-        doc_ref = db.collection("uploads").document()
-        doc_ref.set(
-            {
-                "filename": orig,
-                "timestamp": fs.SERVER_TIMESTAMP,
-                "firebase_url": image_url,
-                "storage_path": public_id,
-                "provider": "cloudinary",
-            }
+        print(
+            f"[upload] OK id={record_id} file={orig} url={image_url}",
+            flush=True,
         )
     except Exception as e:
-        print(f"[upload] error: {e!r}")
+        print(f"[upload] error: {e!r}", flush=True)
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Upload failed (check CLOUDINARY_* and FIREBASE_KEY_PATH on Render). "
-                f"Error: {e!s}"
-            ),
+            detail=f"Upload failed (check CLOUDINARY_* env). Error: {e!s}",
         ) from e
     finally:
         try:
@@ -220,28 +187,24 @@ async def upload(file: UploadFile = File(...)):
 
     return {
         "success": True,
-        "firebase_url": image_url,
         "message": "Image uploaded successfully",
-        "document_id": doc_ref.id,
+        "id": record_id,
+        "image_url": image_url,
     }
 
 
 @app.get("/records")
 def list_records():
-    init_firebase()
-    db = get_db()
-    records = []
-    for doc in db.collection("uploads").stream():
-        data = doc.to_dict() or {}
-        records.append(
+    records = load_records()
+    out = []
+    for r in records:
+        out.append(
             {
-                "id": doc.id,
-                "filename": data.get("filename"),
-                "timestamp": firestore_ts_to_iso(data.get("timestamp")),
-                "firebase_url": data.get("firebase_url"),
-                "storage_path": data.get("storage_path"),
-                "provider": data.get("provider"),
+                "id": r.get("id"),
+                "filename": r.get("filename"),
+                "timestamp": r.get("timestamp"),
+                "image_url": r.get("image_url"),
+                "public_id": r.get("public_id"),
             }
         )
-    records.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
-    return {"records": records}
+    return {"records": out}
