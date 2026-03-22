@@ -25,9 +25,28 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-RECORDS_PATH = DATA_DIR / "records.json"
+
+
+def _resolve_records_path() -> Path:
+    """
+    Where to store upload metadata JSON.
+    Env RECORDS_PATH:
+      - Absolute: e.g. /var/data/records.json (Render persistent disk mount)
+      - Relative: relative to this app folder, e.g. data/records.json
+    If unset: backend/data/records.json (default).
+    """
+    raw = os.getenv("RECORDS_PATH", "").strip()
+    if raw:
+        p = Path(raw)
+        if not p.is_absolute():
+            p = (BASE_DIR / p).resolve()
+    else:
+        p = BASE_DIR / "data" / "records.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+RECORDS_PATH = _resolve_records_path()
 
 _cloudinary_configured = False
 
@@ -96,6 +115,7 @@ def root():
         "status": "running",
         "storage": "cloudinary",
         "metadata": "local_json_file",
+        "records_path": str(RECORDS_PATH),
         "docs": "/docs",
         "health": "/health",
     }
@@ -113,7 +133,7 @@ def head_health():
 
 @app.on_event("startup")
 def startup() -> None:
-    print("[startup] Cloudinary-only API; records at data/records.json")
+    print(f"[startup] Cloudinary-only API; RECORDS_PATH={RECORDS_PATH}")
     try:
         init_cloudinary()
         print("[startup] Cloudinary OK")

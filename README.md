@@ -14,6 +14,7 @@
 | `CLOUDINARY_API_KEY` | Cloudinary dashboard |
 | `CLOUDINARY_API_SECRET` | Cloudinary dashboard |
 | `FRONTEND_ORIGIN` | Your Vercel URL or `*` |
+| `RECORDS_PATH` | **Optional.** Full path to `records.json`. Default: `data/records.json` next to `main.py`. Set a path under a **persistent disk** on Render if you need history to survive restarts. |
 
 ## Render
 
