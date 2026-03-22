@@ -218,13 +218,14 @@ def list_records():
     records = load_records()
     out = []
     for r in records:
+        url = r.get("image_url") or r.get("firebase_url")
         out.append(
             {
                 "id": r.get("id"),
                 "filename": r.get("filename"),
                 "timestamp": r.get("timestamp"),
-                "image_url": r.get("image_url"),
-                "public_id": r.get("public_id"),
+                "image_url": url,
+                "public_id": r.get("public_id") or r.get("storage_path"),
             }
         )
     return {"records": out}
