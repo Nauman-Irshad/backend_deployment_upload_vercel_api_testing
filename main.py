@@ -93,10 +93,11 @@ def parse_origins() -> list[str]:
 app = FastAPI(title="Image Upload API", version="1.0.0")
 
 # allow_credentials=False so allow_origins=["*"] works with browsers (Vercel + Render).
-# If you need cookies later, set FRONTEND_ORIGIN to exact origins and allow_credentials=True.
+# allow_origin_regex: any Vercel preview/production URL works even if FRONTEND_ORIGIN has a typo.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_origins(),
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
