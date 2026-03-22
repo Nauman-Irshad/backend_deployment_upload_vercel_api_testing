@@ -14,6 +14,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 load_dotenv()
 
@@ -116,6 +117,17 @@ def root():
     }
 
 
+@app.head("/")
+def head_root():
+    """Render health probes use HEAD; avoid 405 on GET-only routes."""
+    return Response(status_code=200)
+
+
+@app.head("/health")
+def head_health():
+    return Response(status_code=200)
+
+
 @app.on_event("startup")
 def startup() -> None:
     """Fail fast if Firebase env is wrong (optional dry-run: skip if SKIP_FIREBASE_INIT=1)."""
@@ -138,8 +150,6 @@ async def upload(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
 
-    init_firebase()
-
     orig = safe_filename(file.filename or "upload.bin")
     unique = f"{uuid.uuid4().hex}_{orig}"
     local_path = UPLOAD_DIR / unique
@@ -150,39 +160,51 @@ async def upload(file: UploadFile = File(...)):
     finally:
         await file.close()
 
-    storage_path = f"uploads/{unique}"
-    bucket = get_bucket()
-    blob = bucket.blob(storage_path)
-    blob.upload_from_filename(str(local_path), content_type=file.content_type)
     try:
-        blob.make_public()
-    except Exception as e:
-        # Uniform bucket-level access or rules may block ACL; return signed-style URL info
-        print(f"[upload] make_public warning: {e}")
-    firebase_url = blob.public_url
-    if not firebase_url:
-        firebase_url = (
-            f"https://firebasestorage.googleapis.com/v0/b/{bucket.name}/o/"
-            f"{storage_path.replace('/', '%2F')}?alt=media"
+        init_firebase()
+
+        storage_path = f"uploads/{unique}"
+        bucket = get_bucket()
+        blob = bucket.blob(storage_path)
+        blob.upload_from_filename(str(local_path), content_type=file.content_type)
+        try:
+            blob.make_public()
+        except Exception as e:
+            # Uniform bucket-level access may block object ACLs; URL may still work with Storage rules
+            print(f"[upload] make_public warning: {e}")
+        firebase_url = blob.public_url
+        if not firebase_url:
+            firebase_url = (
+                f"https://firebasestorage.googleapis.com/v0/b/{bucket.name}/o/"
+                f"{storage_path.replace('/', '%2F')}?alt=media"
+            )
+
+        from firebase_admin import firestore as fs
+
+        db = get_db()
+        doc_ref = db.collection("uploads").document()
+        doc_ref.set(
+            {
+                "filename": orig,
+                "timestamp": fs.SERVER_TIMESTAMP,
+                "firebase_url": firebase_url,
+                "storage_path": storage_path,
+            }
         )
-
-    from firebase_admin import firestore as fs
-
-    db = get_db()
-    doc_ref = db.collection("uploads").document()
-    doc_ref.set(
-        {
-            "filename": orig,
-            "timestamp": fs.SERVER_TIMESTAMP,
-            "firebase_url": firebase_url,
-            "storage_path": storage_path,
-        }
-    )
-
-    try:
-        local_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    except Exception as e:
+        print(f"[upload] error: {e!r}")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Upload failed (check FIREBASE_BUCKET, service account key, and Firebase Console). "
+                f"Error: {e!s}"
+            ),
+        ) from e
+    finally:
+        try:
+            local_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     return {
         "success": True,
