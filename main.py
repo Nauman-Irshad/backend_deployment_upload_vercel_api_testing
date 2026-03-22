@@ -119,6 +119,7 @@ app.add_middleware(
 def root():
     return {
         "service": "image-upload-api",
+        "version": "2-cloudinary",
         "status": "running",
         "storage": "cloudinary",
         "docs": "/docs",
